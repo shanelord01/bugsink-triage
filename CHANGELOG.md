@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0
+
+- Triage board rebuilt: progress band, waiting-to-land list, hover-traced dependency graph of fix steps
+  (`_work`), "Needs you" and "Questions" lists (`_meta`), and a Bugsink link on every card.
+- The page follows the database document `board/current`, so data updates need no republish, and unsent
+  choices survive refreshes.
+- Choices: radio options per card, an editable comment box pre-filled for resolve options, Submit to the
+  `decisions` collection, and Submitted, Changed and Done states read back from it.
+- Optional GitHub awareness through the `gh` CLI: `_meta.repos` finds open pull requests that mention an open
+  issue, merged pull requests land their step, and `board.py --prs-only` re-reads GitHub without calling Bugsink.
+- `BUGSINK_BOARD_DIR` sets the board's state directory.
+- README explains how to schedule a daily triage and a fast `--prs-only` refresh.
+
 ## 0.1.0
 
 First release.

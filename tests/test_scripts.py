@@ -29,9 +29,11 @@ class ScriptTests(unittest.TestCase):
     def setUp(self):
         mock.reset()
 
-    def run_script(self, name, *args, token=mock.TOKEN, extra_env=None):
+    def run_script(self, name, *args, token=mock.TOKEN, extra_env=None, no_url=False):
         env = {k: v for k, v in os.environ.items() if not k.startswith("BUGSINK_")}
-        env.update(BUGSINK_URL=self.url, BUGSINK_TRIAGE_TOKEN=token, **(extra_env or {}))
+        env.update(BUGSINK_TRIAGE_TOKEN=token, **(extra_env or {}))
+        if not no_url:
+            env["BUGSINK_URL"] = self.url
         if name != "act.py":
             env["BUGSINK_TOKEN"] = token
         return subprocess.run([sys.executable, str(SCRIPTS / name), *args], capture_output=True, text=True, env=env, timeout=60)
@@ -87,6 +89,61 @@ class ScriptTests(unittest.TestCase):
             self.assertIn('"verdict": "untriaged"', page)  # DEMO-API-1 has no entry
             self.assertNotIn("__DATA__", page)
             self.assertNotIn(mock.TOKEN, page)
+
+    def fake_gh(self, d, prs, merged_urls=()):
+        """A stand-in gh CLI on PATH: `pr list` returns prs, `pr view` reports merged or open."""
+        script = Path(d, "gh")
+        script.write_text("#!/bin/sh\n"
+                          "if [ \"$2\" = list ]; then cat <<'EOF'\n" + json.dumps(prs) + "\nEOF\n"
+                          "elif [ \"$2\" = view ]; then\n"
+                          "  case \"$3\" in " + "|".join(merged_urls or ["NONE"]) + ") S=MERGED;; *) S=OPEN;; esac\n"
+                          "  echo \"{\\\"state\\\":\\\"$S\\\",\\\"isDraft\\\":false,\\\"statusCheckRollup\\\":[]}\"\n"
+                          "fi\n")
+        script.chmod(0o755)
+        return {"PATH": f"{d}:{os.environ['PATH']}", "BUGSINK_BOARD_DIR": d}
+
+    def test_board_links_issue_and_follows_github(self):
+        pr = {"number": 7, "title": "Guard cart total (DEMO-WEB-1)", "url": "https://github.com/acme/web/pull/7",
+              "body": "", "headRefName": "fix/cart"}
+        other = {"number": 8, "title": "Unrelated", "url": "https://github.com/acme/web/pull/8", "body": "mentions DEMO-WEB-10", "headRefName": "x"}
+        with tempfile.TemporaryDirectory() as d:
+            env = self.fake_gh(d, [pr, other])
+            Path(d, "verdicts.json").write_text(json.dumps({
+                "DEMO-WEB-1": {"verdict": "bug", "cause": "cart is undefined"},
+                "_work": [{"code": "W1", "name": "Cart fix", "state": "todo", "fixes": ["DEMO-WEB-1"],
+                           "links": [{"label": "PR 7", "url": pr["url"]}]}],
+                "_meta": {"repos": ["acme/web"], "needs": [{"text": "Merge old", "url": "https://github.com/acme/web/pull/3"}]}}))
+            env["BUGSINK_BOARD_DIR"] = d
+            r = self.run_script("board.py", extra_env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cur = json.loads(Path(d, "current.json").read_text())
+            one = next(i for i in cur["issues"] if i["id"] == "DEMO-WEB-1")
+            self.assertTrue(one["url"].endswith("/issues/issue/aaaaaaaa-0000-0000-0000-000000000001/event/last/"))
+            self.assertTrue(one["url"].startswith(self.url))
+            self.assertEqual(one["prs"], [{"label": "web PR 7", "url": pr["url"]}])  # PR 8 mentions DEMO-WEB-10 only
+            self.assertEqual(cur["work"][0]["state"], "landing")  # its PR is open
+            texts = [n["text"] for n in cur["meta"]["needs"]]
+            self.assertIn("Merge web PR 7: Guard cart total (DEMO-WEB-1)", texts)
+            self.assertIn("Merge old", texts)
+            self.assertIn("DEMO-WEB-1: cart is undefined.", one["comment"])
+            # Now PR 7 and PR 3 merge: --prs-only lands the step and drops both lines, without Bugsink.
+            env = self.fake_gh(d, [], merged_urls=[pr["url"], "https://github.com/acme/web/pull/3"])
+            env["BUGSINK_BOARD_DIR"] = d
+            r = self.run_script("board.py", "--prs-only", token="unused", extra_env=env, no_url=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip(), "changed")
+            cur = json.loads(Path(d, "current.json").read_text())
+            self.assertEqual(cur["work"][0]["state"], "landed")
+            self.assertEqual(cur["meta"]["needs"], [])
+            Path(d, "last-synced.json").write_text(json.dumps(cur))
+            r = self.run_script("board.py", "--prs-only", token="unused", extra_env=env, no_url=True)
+            self.assertEqual(r.stdout.strip(), "no change")
+
+    def test_board_without_gh_or_repos_still_builds(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_script("board.py", "--no-prs", extra_env={"BUGSINK_BOARD_DIR": d})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(Path(d, "current.json").exists())
 
     def test_act_dry_run_sends_nothing_then_resolves(self):
         mock.Handler.posts.clear()

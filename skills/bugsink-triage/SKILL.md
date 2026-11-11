@@ -105,18 +105,52 @@ After any change, say which issues you changed and how.
 
 ## Triage board (optional)
 
-The board shows all open issues on one page with a verdict, a cause, a next step and choices per issue. It
-needs the Artifact tool and the `db` capability, which exist only in Claude Code connected to claude.ai. If
-they are not available, skip this section: everything above works without it.
+The board shows all open issues on one page: a progress band, a waiting-to-land list, a hover-traced
+dependency graph of the fix steps behind the issues, and one card per issue with its verdict, cause, next
+step, a link to the issue in Bugsink and choices for the user. It needs the Artifact tool and the `db`
+capability, which exist only in Claude Code connected to claude.ai. If they are not available, skip this
+section: everything above works without it.
+
+State lives in `$BUGSINK_BOARD_DIR` (default `~/.local/state/bugsink-triage-board`): `verdicts.json` (merge each
+triage's verdicts into it; issues no longer open are ignored), `artifact-url.txt` (the board's link),
+`board.html`, `current.json` (the live copy of the data) and `last-synced.json`. Make the folder if it is missing.
 
 1. Write `verdicts.json` keyed by friendly id, with `verdict` (bug, regression, expected, outside, parked),
-   `group`, `cause`, `action`, `owner` and optionally `options`. The header of `scripts/board.py` lists the
-   fields, including the optional `_work` (fix steps, their dependencies and PRs) and `_meta`.
-2. Run `python3 "${CLAUDE_PLUGIN_ROOT}/skills/bugsink-triage/scripts/board.py" --verdicts verdicts.json --out board.html`.
-3. Publish `board.html` with the Artifact tool, with `capabilities: {"db": {}}` the first time. Keep the
-   artifact URL so a republish keeps the same link.
-4. When the user says they have submitted, read the saved choices with ArtifactData (action `list`, collection
-   `decisions`). Act only on the choices they made, through `act.py`, and name each resolve in your reply.
+   `group`, `cause`, `action`, `owner`, and optionally `options` and `comment`. It may also carry `_work` (the fix
+   steps: state, size, deps, the issues each fixes, PR links) and `_meta` (`eyebrow`, `subtitle`, `needs`,
+   `questions`, `repos`). The header of `scripts/board.py` lists every field.
+2. Run `python3 "${CLAUDE_PLUGIN_ROOT}/skills/bugsink-triage/scripts/board.py"`. It writes `board.html` and
+   `current.json`.
+3. Publish `board.html` with the Artifact tool, with `capabilities: {"db": {}}` the first time and `url` from
+   `artifact-url.txt` afterwards, so the link stays the same. Then write the data as below.
 
-The page is a snapshot, so rebuild it after any resolve. It holds issue ids, device models and error text and
-never a token. Check the error text for anything private before publishing.
+The page paints from a copy embedded in it, then follows the database document `board/current`. So there are
+two ways to update it:
+
+- **Data changed** (a new triage, a resolve, a PR merging): run `board.py`, then ArtifactData `get` on
+  collection `board`, doc `current` for its `version`, then `set` with `file_path` `<state dir>/current.json`
+  and `if_version` (omit it when the document does not exist yet). Every open view updates and the user's unsent
+  choices stay. Do not republish for this.
+- **Template changed** (`board.template.html`, for example after a plugin update): publish `board.html`, then
+  write `current.json` as above.
+
+Each card has radio options (the first is the recommendation). Picking a resolve option shows a comment box
+pre-filled with a suggested comment (set `comment` per issue to change the suggestion). The user can edit it,
+and the saved choice carries the final text in `comment`: post exactly that when you resolve. The user picks,
+presses Submit, and the choices land in the `decisions` collection. Read them with ArtifactData (action `list`,
+collection `decisions`) when they say they have submitted; nothing reaches the chat by itself. Act only on the
+choices they made, through `act.py`, and name each resolve in your reply. Then mark each document you handled:
+ArtifactData `update` on `decisions/<doc id>` with `status: done`, `handledAt` (ISO time) and `results` (a map
+of issue id to one plain sentence of what was done), pinned with `if_version`. The card then shows Done with that
+sentence. Cards show Submitted, Changed and Done from that collection.
+
+**GitHub awareness (optional, needs the `gh` CLI, signed in).** A `_meta.needs` entry may be
+`{"text": "...", "url": "<pull request URL>"}`: each build reads the PR's state with `gh`, so a merged PR lands its
+step and drops its line. With `_meta.repos` (`["owner/repo", ...]`) the board also finds open PRs that mention an
+open issue's id in their title, body or branch, adds a "Merge ..." line and links the PR on the card.
+`board.py --prs-only` re-reads GitHub alone in a few seconds, with no Bugsink call, and prints `changed` or
+`no change` against `last-synced.json`. When it prints `changed`, write `current.json` to `board/current` as
+above and copy it over `last-synced.json`. `--no-prs` skips GitHub.
+
+The page is a snapshot of Bugsink and GitHub, so rebuild it after any resolve. It holds issue ids, device models
+and error text and never a token. Check the error text for anything private before publishing.

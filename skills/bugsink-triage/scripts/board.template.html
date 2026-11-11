@@ -55,7 +55,8 @@ h1 { font-family: var(--font-display); font-size: 28px; font-weight: 700; margin
 .flow { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 12px; min-width: 0; }
 .flow-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .flow h2, .panel h2, .sect { font-family: var(--font-display); font-size: 15px; margin: 0; font-weight: 600; }
-.sect { color: var(--muted); margin: 0 0 -12px; }
+.sect { color: var(--muted); margin: 18px 0 8px; }
+#list > .sect:first-child { margin-top: 0; }
 .hint { font-size: 12px; color: var(--muted); }
 .queue { list-style: none; margin: 0; padding: 0; display: grid; }
 .queue li { display: grid; grid-template-columns: 34px 52px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); font-size: 14px; }
@@ -96,14 +97,29 @@ h1 { font-family: var(--font-display); font-size: 28px; font-weight: 700; margin
 .err { margin: 6px 0; overflow-wrap: anywhere; }
 .row { margin: 4px 0; font-size: 14px; }
 .row span { color: var(--muted); }
+.row a { color: var(--accent); text-decoration: none; }
+.row a:hover, .row a:focus-visible { text-decoration: underline; }
+.blink { font-size: 13px; color: var(--accent); text-decoration: none; }
+.blink:hover, .blink:focus-visible { text-decoration: underline; }
 .trace { font: 12px/1.4 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
 .opts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 2px; }
 .opts label { display: flex; gap: 6px; align-items: center; cursor: pointer; font-size: 14px; }
+.status { margin: 6px 0; padding: 6px 10px; border-radius: 6px; font-size: 13px; border: 1px solid var(--line); }
+.status.pending { background: var(--land-soft); color: var(--land); border-color: transparent; }
+.status.done { background: var(--done-soft); color: var(--done); border-color: transparent; }
+.status.changed { background: var(--work-soft); color: var(--work); border-color: transparent; }
+.card.handled { opacity: .8; }
+.submitbar button:disabled { opacity: .5; cursor: default; }
+.clabel { display: block; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.cbox textarea { width: 100%; font: inherit; font-size: 14px; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; resize: vertical; margin-top: 2px; }
 .opts label span { color: var(--muted); font-size: 12px; }
 .lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; min-width: 0; }
 .panel h2 { margin-bottom: 8px; }
 .panel ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 14px; }
+.panel li a { color: var(--accent); text-decoration: none; }
+.panel li a:hover, .panel li a:focus-visible { text-decoration: underline; }
+.panel .prnote { color: var(--muted); font-size: 13px; }
 .panel .empty { color: var(--muted); font-size: 14px; margin: 0; }
 .submitbar { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; padding-bottom: max(10px, env(safe-area-inset-bottom, 0px)); }
 .submitbar button { font: inherit; border: 1px solid var(--fg); background: var(--fg); color: var(--bg); border-radius: 6px; padding: 7px 16px; cursor: pointer; }
@@ -157,20 +173,43 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
 <script id="data" type="application/json">__DATA__</script>
 <script>
 (function () {
-  const D = JSON.parse(document.getElementById('data').textContent);
-  const issues = D.issues, work = D.work || [], meta = D.meta || {};
+  // The embedded copy is the first paint and the fallback. Once the page's database answers, the
+  // document board/current replaces it, so a small write updates every open view without a republish.
+  let D = JSON.parse(document.getElementById('data').textContent);
+  let issues = D.issues, work = D.work || [], meta = D.meta || {};
+  const PICKS_KEY = 'bugsink-board-picks';
   const WEIGHT = { S: 1, M: 2, L: 3 };
   const LABEL = { landed: 'Landed', landing: 'In review', running: 'In progress', todo: 'Not started' };
   const COLOR = { landed: 'var(--done)', landing: 'var(--land)', running: 'var(--work)', todo: 'var(--todo)' };
   const ORDER = ['bug', 'regression', 'untriaged', 'parked', 'expected', 'outside'];
   const picked = {};
   let filter = null;
-  issues.forEach(i => { picked[i.id] = i.options[0]; });
+  // Choices and comments survive a data refresh and a reload: kept per issue, dropped when the option is gone.
+  const comments = {};
+  const edited = {};
+  const needsComment = opt => /resolve/i.test(opt || '');
+  function ensurePicks() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(PICKS_KEY) || '{}'); } catch (e) {}
+    const savedPick = saved.picked || {}, savedComment = saved.comments || {}, savedEdited = saved.edited || {};
+    const ids = new Set(issues.map(i => i.id));
+    Object.keys(picked).forEach(id => { if (!ids.has(id)) delete picked[id]; });
+    Object.keys(comments).forEach(id => { if (!ids.has(id)) delete comments[id]; });
+    issues.forEach(i => {
+      const keep = picked[i.id] || savedPick[i.id];
+      picked[i.id] = i.options.includes(keep) ? keep : i.options[0];
+      if (savedEdited[i.id]) edited[i.id] = true;
+      // Claude's suggested comment fills the box until the user types their own; a new suggestion replaces an untouched one.
+      comments[i.id] = edited[i.id] ? (comments[i.id] != null ? comments[i.id] : savedComment[i.id] || '') : (i.comment || '');
+    });
+  }
+  function savePicks() { try { localStorage.setItem(PICKS_KEY, JSON.stringify({ picked, comments, edited })); } catch (e) {} }
+  ensurePicks();
 
   const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
   const byCode = () => { const m = {}; work.forEach(w => { m[w.code] = w; }); return m; };
   const openDeps = w => { const m = byCode(); return (w.deps || []).filter(d => !m[d] || m[d].state !== 'landed'); };
-  const message = () => 'Bugsink triage board ' + D.generated + ':\n' + issues.map(i => '- ' + i.id + ': ' + picked[i.id]).join('\n');
+  const message = () => 'Bugsink triage board ' + D.generated + ':\n' + issues.map(i => '- ' + i.id + ': ' + picked[i.id] + (needsComment(picked[i.id]) && comments[i.id] ? ' (comment: ' + comments[i.id] + ')' : '')).join('\n');
 
   // Transitive dependents of each work item: how many steps it holds up.
   function blocksCount(code) {
@@ -215,7 +254,7 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
       const who = el('div', 'who');
       who.appendChild(el('div', null, e.w.name));
       const br = el('div', 'br', LABEL[e.w.state] + (e.w.note ? ' · ' + e.w.note : ''));
-      (e.w.links || []).forEach(l => { br.append(' · '); const a = el('a', null, l.label); a.href = l.url; a.target = '_blank'; a.rel = 'noopener'; br.appendChild(a); });
+      (e.w.links || []).forEach(l => { br.append(' · '); const a = el('a', null, l.label); a.href = l.url; a.target = '_blank'; a.rel = 'noopener'; br.appendChild(a); if (l.pr) br.append(' (' + prNote(l.pr) + ')'); });
       who.appendChild(br);
       li.appendChild(who);
       li.appendChild(el('span', 'blocks', e.n ? 'holds up ' + e.n : ''));
@@ -278,24 +317,65 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
     Object.keys(els).forEach(c => { const g = els[c]; g.addEventListener('mouseenter', () => focusOn(c)); g.addEventListener('mouseleave', clear); g.addEventListener('focus', () => focusOn(c)); g.addEventListener('blur', clear); });
   }
 
+  // What the user submitted, and whether Claude has acted: the decisions collection. Each document
+  // is {submittedAt, choices:[{id, choice, comment}]}; Claude marks one handled with
+  // {status:'done', handledAt, results:{ISSUE-ID:'what was done'}}.
+  let decisions = [];
+  const fmtTime = iso => { try { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; } };
+  const wantedComment = id => needsComment(picked[id]) ? (comments[id] || '') : '';
+  function latestFor(id) {
+    const ds = decisions.slice().sort((a, b) => ((b.submittedAt || '') > (a.submittedAt || '') ? 1 : -1));
+    for (const d of ds) {
+      const c = (d.choices || []).find(x => x.id === id);
+      if (c) return { choice: c.choice, comment: c.comment || '', at: d.submittedAt, done: d.status === 'done', handledAt: d.handledAt, result: d.results && d.results[id] };
+    }
+    return null;
+  }
+  const isNewer = id => { const s = latestFor(id); return !s || s.choice !== picked[id] || (needsComment(picked[id]) && s.comment !== wantedComment(id)); };
+  function updateSubmit() {
+    const btn = document.getElementById('submit');
+    const n = issues.filter(i => isNewer(i.id)).length;
+    btn.disabled = n === 0;
+    btn.textContent = n === 0 ? 'Nothing new to submit' : (decisions.length ? 'Submit ' + n + ' change' + (n > 1 ? 's' : '') : 'Submit choices');
+  }
+
   function card(i) {
     const c = el('div', 'card'); c.style.setProperty('--c', 'var(--' + i.verdict + ')');
     const top = el('div', 'top');
     top.append(el('span', 'id', i.id), el('span', 'tag', i.verdict + (i.muted ? ' (muted)' : '')),
+      (() => { const l = el('a', 'blink', 'Open in Bugsink'); l.href = i.url; l.target = '_blank'; l.rel = 'noopener'; return l; })(),
       el('span', 'meta', i.events + ' events, last ' + i.last.slice(0, 16).replace('T', ' ') + ', ' + (i.release || 'no release') + (i.device ? ', ' + i.device : '')));
     c.append(top, el('div', 'err', (i.type ? i.type + ': ' : '') + i.value));
+    const sub = latestFor(i.id);
+    if (sub) {
+      let text, cls;
+      if (sub.choice !== picked[i.id]) { text = 'Changed since you submitted "' + sub.choice + '" at ' + fmtTime(sub.at) + '. Submit to send the new choice.'; cls = 'changed'; }
+      else if (sub.done) { text = 'Done' + (sub.handledAt ? ' at ' + fmtTime(sub.handledAt) : '') + ': ' + (sub.result || 'Claude acted on "' + sub.choice + '".'); cls = 'done'; }
+      else { text = 'Submitted at ' + fmtTime(sub.at) + ': "' + sub.choice + '". Waiting for Claude. Say "submitted" in the chat.'; cls = 'pending'; }
+      c.append(el('div', 'status ' + cls, text));
+      if (cls === 'done') c.classList.add('handled');
+    }
     if (i.cause) { const r = el('div', 'row'); r.append(el('span', null, 'Cause: '), document.createTextNode(i.cause)); c.append(r); }
     if (i.action) { const r = el('div', 'row'); r.append(el('span', null, 'Next: '), document.createTextNode(i.action + (i.owner ? ' (' + i.owner + ')' : ''))); c.append(r); }
+    if ((i.prs || []).length) { const r = el('div', 'row'); r.append(el('span', null, 'Fix in review: '));
+      i.prs.forEach((p, n) => { if (n) r.append(', '); const a = el('a', null, p.label); a.href = p.url; a.target = '_blank'; a.rel = 'noopener'; r.appendChild(a); }); c.append(r); }
     if (i.trace.length) c.append(el('div', 'trace', i.trace.join(' | ')));
+    const cbox = el('div', 'cbox'); cbox.hidden = !needsComment(picked[i.id]);
     const o = el('div', 'opts'); o.setAttribute('role', 'radiogroup'); o.setAttribute('aria-label', 'What to do about ' + i.id);
     i.options.forEach((opt, n) => {
       const l = el('label'); const r = document.createElement('input');
       r.type = 'radio'; r.name = 'opt-' + i.id; r.id = 'opt-' + i.id + '-' + n; r.checked = picked[i.id] === opt;
-      r.onchange = () => { picked[i.id] = opt; };
+      r.onchange = () => { picked[i.id] = opt; savePicks(); renderIssues(); };
       l.append(r, document.createTextNode(opt)); if (n === 0) l.append(el('span', null, 'recommended'));
       o.append(l);
     });
     c.append(o);
+    const ta = document.createElement('textarea'); ta.id = 'comment-' + i.id; ta.rows = 2; ta.value = comments[i.id] || '';
+    ta.placeholder = 'Comment for Bugsink';
+    ta.setAttribute('aria-label', 'Comment for ' + i.id);
+    ta.oninput = () => { comments[i.id] = ta.value; edited[i.id] = true; savePicks(); updateSubmit(); };
+    const lab = el('label', 'clabel', 'Comment Claude will post (edit it if you like)'); lab.htmlFor = ta.id;
+    cbox.append(lab, ta); c.append(cbox);
     return c;
   }
 
@@ -319,15 +399,47 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
     if (!rows.length) list.append(el('p', 'sub', 'No open issues.'));
   }
 
+  const prNote = p => p ? (p.state === 'open' ? (p.draft ? 'draft' : 'open') : p.state) + (p.checks && p.checks !== 'none' ? ', checks ' + p.checks : '') : '';
   function fill(id, items) {
     const box = document.getElementById(id); box.replaceChildren();
     if (!Array.isArray(items) || !items.length) { box.appendChild(el('p', 'empty', 'Nothing open.')); return; }
-    const ul = el('ul'); items.forEach(x => ul.appendChild(el('li', null, String(x)))); box.appendChild(ul);
+    const ul = el('ul');
+    items.forEach(x => {
+      const li = el('li');
+      if (x && typeof x === 'object') {
+        if (x.url) { const a = el('a', null, x.text); a.href = x.url; a.target = '_blank'; a.rel = 'noopener'; li.appendChild(a); }
+        else li.append(String(x.text));
+        if (x.pr) li.appendChild(el('span', 'prnote', ' (' + prNote(x.pr) + ')'));
+      } else li.append(String(x));
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
   }
 
-  renderSummary(); renderQueue(); renderGraph(); renderIssues();
-  fill('needs', meta.needs); fill('questions', meta.questions);
-  document.getElementById('updated').textContent = 'Last updated ' + D.generated;
+  let live = false;
+  function renderAll() {
+    renderSummary(); renderQueue(); renderGraph(); renderIssues();
+    fill('needs', meta.needs); fill('questions', meta.questions);
+    updateSubmit();
+    document.getElementById('updated').textContent = 'Last updated ' + D.generated + (live ? ' · live' : ' · snapshot');
+  }
+  function setData(next) {
+    D = next; issues = D.issues || []; work = D.work || []; meta = D.meta || {};
+    ensurePicks(); renderAll();
+  }
+  renderAll();
+  (async () => {
+    let db = null;
+    try { db = window.claude && await window.claude.use('db'); } catch (e) {}
+    if (!db) return;
+    db.collection('decisions').onSnapshot(s => { decisions = s.docs.map(d => d.data()); renderAll(); }, () => {});
+    db.doc('board/current').onSnapshot(s => {
+      if (!s.exists) return;
+      const next = s.data();
+      if (!next || !Array.isArray(next.issues)) return;
+      live = true; setData(next);
+    }, () => {});
+  })();
 
   const msg = document.getElementById('msg'), out = document.getElementById('out');
   const show = () => { out.textContent = message(); out.hidden = false; };
@@ -342,8 +454,10 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
     try { db = window.claude && await window.claude.use('db'); } catch (e) {}
     if (!db) { msg.textContent = 'Saving is not available here. Copy the message into the chat instead.'; return; }
     try {
-      await db.collection('decisions').add({ board: D.generated, submittedAt: new Date().toISOString(), choices: issues.map(i => ({ id: i.id, choice: picked[i.id] })) });
-      msg.textContent = 'Submitted. Tell Claude "submitted" in the chat and it will act on these.';
+      const entry = { board: D.generated, submittedAt: new Date().toISOString(), choices: issues.map(i => ({ id: i.id, choice: picked[i.id], comment: wantedComment(i.id) })) };
+      await db.collection('decisions').add(entry);
+      decisions.push(entry); renderAll();
+      msg.textContent = 'Submitted at ' + fmtTime(entry.submittedAt) + '. Tell Claude "submitted" in the chat and it will act on these.';
     } catch (e) { msg.textContent = 'Could not save (' + ((e && e.code) || 'error') + '). Copy the message into the chat instead.'; }
   };
 })();

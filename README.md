@@ -88,13 +88,43 @@ The first `act.py` call prints what it would send. The second sends it.
 
 ## Triage board (optional)
 
-`/bugsink-triage:board` builds a single page of open issues with a verdict, cause and next step on each card,
-a progress band, a "waiting to land" list and a dependency graph of fixes. You pick an option per issue and press
-Submit, then tell Claude "submitted" and it reads your choices back and acts on them.
+`/bugsink-triage:board` builds a single page of open issues. Each card shows the error, the top of the trace, a
+link to the issue in Bugsink, a verdict, the cause and the next step, with radio choices. Picking a resolve option
+shows a comment box pre-filled with a suggested comment that you can edit. Above the cards sit a progress band,
+a "waiting to land" list and a dependency graph of the fix steps behind the issues (hover a box to trace its
+chain). You choose per issue, press Submit, then tell Claude "submitted". Claude reads your choices back, acts
+on them with your comments, and marks each submission done so the card shows what happened.
 
 This needs the Artifact tool and the `db` capability, which exist only in Claude Code connected to claude.ai.
 Without them the board is not available and everything else works the same. Read the page for private details
 before you publish it: it contains issue ids, device models and error text.
+
+**Updates without republishing.** The page paints from an embedded copy and then follows a database document, so
+new data is one small write and the choices you have not submitted yet survive. Republish only when the plugin's
+template changes.
+
+**State directory.** The board keeps `verdicts.json`, `artifact-url.txt`, `current.json`, `last-synced.json` and
+`board.html` in `$BUGSINK_BOARD_DIR`, which defaults to `~/.local/state/bugsink-triage-board`.
+
+**GitHub awareness (optional).** With the [`gh`](https://cli.github.com) CLI signed in, list repositories in
+`_meta.repos` of `verdicts.json`. Open pull requests that mention an open issue's id (in the title, body or branch
+name) become "Merge ..." lines and card links. A merged pull request lands its fix step and drops its line.
+`board.py --prs-only` re-reads GitHub in seconds without calling Bugsink and prints `changed` or `no change`.
+
+### Schedule it yourself
+
+The plugin ships no scheduled tasks. To triage daily and keep pull request state fresh, create your own with
+Claude Code's scheduling (the `/schedule` skill for cloud routines, or `/loop` inside a session), or with cron on a
+machine that stays on. For example:
+
+```text
+Every weekday at 8am: run /bugsink-triage:check, triage anything new, rebuild the board and write board/current.
+Every hour:           run board.py --prs-only; if it prints "changed", write current.json to board/current.
+```
+
+The hourly job costs almost nothing when nothing changed, because `--prs-only` makes no Bugsink call and the job
+stops at `no change`. Run it more often if you want faster pull request updates. Scheduled runs need the same
+environment variables as an interactive session.
 
 ## Safety
 
