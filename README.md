@@ -94,10 +94,10 @@ The first `act.py` call prints what it would send. The second sends it.
 link to the issue in Bugsink, a verdict, the cause and the next step, with radio choices. Picking a resolve option
 shows a comment box pre-filled with a suggested comment that you can edit. Above the cards sit a progress band,
 a "waiting to land" list and a dependency graph of the fix steps behind the issues (hover a box to trace its
-chain). You choose per issue, press Submit, then tell Claude "submitted". Claude reads your choices back, acts
+chain). You choose per issue, press Submit and confirm the send to Claude in the chat (if that is not offered, tell Claude "submitted"). Claude reads your choices back, acts
 on them with your comments, and marks each submission done so the card shows what happened.
 
-This needs the Artifact tool and the `db` capability, which exist only in Claude Code connected to claude.ai.
+This needs the Artifact tool and the `db` capability (plus `room` for the hand-over on Submit), which exist only in Claude Code connected to claude.ai.
 Without them the board is not available and everything else works the same. Read the page for private details
 before you publish it: it contains issue ids, device models and error text.
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+
+- Submit on the board now offers to send Claude a short note (`kind: bugsink-triage-submit`) through the Artifact `room` capability, so the user confirms once in the chat instead of typing "submitted". Publish with `capabilities: {"db": {}, "room": {}}`. Where that is not offered the page keeps the old wording and the Copy button.
+
 ## 0.3.0
 
 - Config file `bugsink-triage.config.json` (example shipped) holds everything environment-specific: server URL,

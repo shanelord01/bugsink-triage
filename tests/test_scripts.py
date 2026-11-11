@@ -155,6 +155,8 @@ class ScriptTests(unittest.TestCase):
             page = Path(d, "board.html").read_text()
             self.assertIn("collection('handoffs')", page)  # the page reads hand-offs
             self.assertNotIn("claude://", page)
+            self.assertIn("sendToClaudeSession", page)  # Submit hands Claude a note
+            self.assertIn("bugsink-triage-submit", page)
 
     def test_config_file_renames_env_and_reads_token_command(self):
         with tempfile.TemporaryDirectory() as d:

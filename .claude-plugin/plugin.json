@@ -1,7 +1,7 @@
 {
   "name": "bugsink-triage",
   "displayName": "Bugsink Triage",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Check a self-hosted Bugsink server for open issues, trace each one to its cause, classify it, and act on it with comments, resolves and mutes. Read only by default. Optional triage board for claude.ai.",
   "author": { "name": "Shane Lord", "url": "https://github.com/shanelord01" },
   "homepage": "https://github.com/shanelord01/bugsink-triage",

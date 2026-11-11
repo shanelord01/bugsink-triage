@@ -388,7 +388,7 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
       let text, cls;
       if (sub.choice !== picked[i.id]) { text = 'Changed since you submitted "' + sub.choice + '" at ' + fmtTime(sub.at) + '. Submit to send the new choice.'; cls = 'changed'; }
       else if (sub.done) { text = 'Done' + (sub.handledAt ? ' at ' + fmtTime(sub.handledAt) : '') + ': ' + (sub.result || 'Claude acted on "' + sub.choice + '".'); cls = 'done'; }
-      else { text = 'Submitted at ' + fmtTime(sub.at) + ': "' + sub.choice + '". Waiting for Claude. Say "submitted" in the chat.'; cls = 'pending'; }
+      else { text = 'Submitted at ' + fmtTime(sub.at) + ': "' + sub.choice + '". Waiting for Claude. If it has not started, say "submitted" in the chat.'; cls = 'pending'; }
       c.append(el('div', 'status ' + cls, text));
       if (cls === 'done') c.classList.add('handled');
     }
@@ -492,17 +492,40 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
     try { await navigator.clipboard.writeText(message()); msg.textContent = 'Copied. Paste it into the chat.'; }
     catch (e) { msg.textContent = 'Select the text below and copy it.'; }
   };
-  document.getElementById('submit').onclick = async () => {
-    show();
-    let db = null;
-    try { db = window.claude && await window.claude.use('db'); } catch (e) {}
-    if (!db) { msg.textContent = 'Saving is not available here. Copy the message into the chat instead.'; return; }
+  // Submit saves the choices to the database, then hands Claude a short note so its turn can start without the
+  // user typing anything. The note goes through the room capability's sendToClaudeSession, which must be
+  // called from the click itself, so the room and its availability are resolved at load, not in the handler.
+  let roomNs = null, canSend = 'off';
+  (async () => {
     try {
-      const entry = { board: D.generated, submittedAt: new Date().toISOString(), choices: issues.map(i => ({ id: i.id, choice: picked[i.id], comment: wantedComment(i.id) })) };
-      await db.collection('decisions').add(entry);
-      decisions.push(entry); renderAll();
-      msg.textContent = 'Submitted at ' + fmtTime(entry.submittedAt) + '. Tell Claude "submitted" in the chat and it will act on these.';
-    } catch (e) { msg.textContent = 'Could not save (' + ((e && e.code) || 'error') + '). Copy the message into the chat instead.'; }
+      roomNs = window.claude && await window.claude.use('room');
+      if (roomNs && roomNs.canSendToClaudeSession) canSend = await roomNs.canSendToClaudeSession();
+    } catch (e) { roomNs = null; canSend = 'off'; }
+  })();
+  const canHandOver = () => roomNs && (canSend === 'available' || canSend === 'available_if_summoned' || canSend === 'available_if_opened');
+  document.getElementById('submit').onclick = () => {
+    show();
+    const entry = { board: D.generated, submittedAt: new Date().toISOString(), choices: issues.map(i => ({ id: i.id, choice: picked[i.id], comment: wantedComment(i.id) })) };
+    let handOver = null;
+    if (canHandOver()) {
+      // Called in the same tick as the click, before any await.
+      try {
+        handOver = roomNs.sendToClaudeSession(
+          { label: 'Triage decisions', kind: 'bugsink-triage-submit', submittedAt: entry.submittedAt, issues: entry.choices.length },
+          { deliver: 'send', attachPresence: false });
+      } catch (e) { handOver = null; }
+    }
+    (async () => {
+      let db = null;
+      try { db = window.claude && await window.claude.use('db'); } catch (e) {}
+      if (!db) { msg.textContent = 'Saving is not available here. Copy the message into the chat instead.'; return; }
+      try {
+        await db.collection('decisions').add(entry);
+        decisions.push(entry); renderAll();
+        msg.textContent = 'Submitted at ' + fmtTime(entry.submittedAt) + '. ' + (handOver ? 'Confirm the send to Claude in the chat.' : 'Tell Claude "submitted" in the chat and it will act on these.');
+      } catch (e) { msg.textContent = 'Could not save (' + ((e && e.code) || 'error') + '). Copy the message into the chat instead.'; return; }
+      if (handOver) handOver.catch(() => { msg.textContent = 'Submitted at ' + fmtTime(entry.submittedAt) + '. Tell Claude "submitted" in the chat and it will act on these.'; });
+    })();
   };
 })();
 </script>

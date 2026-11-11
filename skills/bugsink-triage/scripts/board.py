@@ -50,7 +50,7 @@ band shows how many open issues are triaged.
 Each card offers the options as a radio group, the first preselected as recommended; a default set per
 verdict applies when "options" is absent. Picking a resolve option shows a comment box pre-filled with
 the suggested comment. In claude.ai Artifacts with the `db` capability, the Submit button saves the
-choices to the collection "decisions" (one document per submit); Claude reads them back with
+choices to the collection "decisions" (one document per submit) and, with the `room` capability, offers to send Claude a note so its turn starts after one confirmation; Claude reads them back with
 ArtifactData, acts on them, then marks each document done. Anywhere else, "Copy as message" gives the
 same choices as text for the chat.
 
