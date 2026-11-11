@@ -2,6 +2,7 @@
 
   python3 -m unittest discover -s tests -v
 """
+import datetime as dt
 import json
 import os
 import subprocess
@@ -138,6 +139,79 @@ class ScriptTests(unittest.TestCase):
             Path(d, "last-synced.json").write_text(json.dumps(cur))
             r = self.run_script("board.py", "--prs-only", token="unused", extra_env=env, no_url=True)
             self.assertEqual(r.stdout.strip(), "no change")
+
+    def test_board_shows_pr_owner_and_config_defaults(self):
+        pr = {"number": 7, "title": "Fix (DEMO-WEB-1)", "url": "https://github.com/acme/web/pull/7", "body": "", "headRefName": "x"}
+        with tempfile.TemporaryDirectory() as d:
+            env = self.fake_gh(d, [pr])
+            Path(d, "bugsink-triage.config.json").write_text(json.dumps({
+                "repos": ["acme/web"],
+                "prSessions": {pr["url"]: {"id": "session-1", "name": "Checkout fix"}}}))
+            r = self.run_script("board.py", extra_env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cur = json.loads(Path(d, "current.json").read_text())
+            need = next(n for n in cur["meta"]["needs"] if n["url"] == pr["url"])
+            self.assertEqual(need["session"], {"id": "session-1", "name": "Checkout fix"})
+            page = Path(d, "board.html").read_text()
+            self.assertIn("collection('handoffs')", page)  # the page reads hand-offs
+            self.assertNotIn("claude://", page)
+
+    def test_config_file_renames_env_and_reads_token_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            tok = Path(d, "tok.sh")
+            tok.write_text(f"#!/bin/sh\necho {mock.TOKEN}\n")
+            tok.chmod(0o755)
+            Path(d, "bugsink-triage.config.json").write_text(json.dumps({
+                "_comment": "ignored", "urlEnv": "ACME_ERRORS_URL", "readTokenCommand": [str(tok)],
+                "projects": ["demo-web"], "tags": ["secret.tag"]}))
+            env = {k: v for k, v in os.environ.items() if not k.startswith("BUGSINK_")}
+            env.update(BUGSINK_BOARD_DIR=d, ACME_ERRORS_URL=self.url)
+            r = subprocess.run([sys.executable, str(SCRIPTS / "check.py"), "--all"], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("Total: 1", r.stdout)            # projects default from the config
+            self.assertIn("secret.tag=hidden", r.stdout)   # tags default from the config
+            self.assertNotIn(mock.TOKEN, r.stdout + r.stderr)
+            r = subprocess.run([sys.executable, str(SCRIPTS / "config.py"), "show"], capture_output=True, text=True, env=env)
+            self.assertIn("read token    command in config", r.stdout)
+            self.assertNotIn(mock.TOKEN, r.stdout)
+
+    def test_config_init_does_not_overwrite(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = {k: v for k, v in os.environ.items() if not k.startswith("BUGSINK_")}
+            env["BUGSINK_BOARD_DIR"] = d
+            run = lambda: subprocess.run([sys.executable, str(SCRIPTS / "config.py"), "init"], capture_output=True, text=True, env=env)
+            self.assertEqual(run().returncode, 0)
+            self.assertTrue(Path(d, "bugsink-triage.config.json").exists())
+            self.assertNotEqual(run().returncode, 0)
+
+    def test_state_dir_from_config(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as state:
+            cfg = Path(d, "c.json")
+            cfg.write_text(json.dumps({"stateDir": state}))
+            env = {k: v for k, v in os.environ.items() if not k.startswith("BUGSINK_")}
+            env.update(BUGSINK_TRIAGE_CONFIG=str(cfg), BUGSINK_URL=self.url, BUGSINK_TOKEN=mock.TOKEN)
+            r = subprocess.run([sys.executable, str(SCRIPTS / "board.py"), "--no-prs"], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(Path(state, "current.json").exists())
+
+    def test_handoff_record_and_close_out(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "artifact-url.txt").write_text("https://claude.ai/artifact/example\n")
+            Path(d, "bugsink-triage.config.json").write_text(json.dumps({"handoffDueHours": 6}))
+            r = self.run_script("handoff.py", "new", "--to-id", "session-2", "--to-name", "Checkout fix",
+                                "--task", "Guard the cart total", "--step", "W1", "--issues", "DEMO-WEB-1",
+                                extra_env={"BUGSINK_BOARD_DIR": d})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out = json.loads(r.stdout)
+            doc = out["document"]
+            self.assertEqual(out["doc_id"], "ho-guard-the-cart-total")
+            self.assertEqual((doc["to"], doc["step"], doc["issues"], doc["status"]),
+                             ({"id": "session-2", "name": "Checkout fix"}, "W1", ["DEMO-WEB-1"], "open"))
+            asked = dt.datetime.strptime(doc["askedAt"], "%Y-%m-%dT%H:%M:%SZ")
+            due = dt.datetime.strptime(doc["dueAt"], "%Y-%m-%dT%H:%M:%SZ")
+            self.assertEqual(due - asked, dt.timedelta(hours=6))  # from handoffDueHours
+            self.assertIn("handoffs/ho-guard-the-cart-total", out["close_out"])
+            self.assertIn("https://claude.ai/artifact/example", out["close_out"])
 
     def test_board_without_gh_or_repos_still_builds(self):
         with tempfile.TemporaryDirectory() as d:

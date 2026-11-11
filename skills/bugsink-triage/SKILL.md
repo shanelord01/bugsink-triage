@@ -14,22 +14,28 @@ API details, traps and unreadable-trace notes are in
 
 ## Step 0: configuration
 
-The scripts read the environment. Check it before anything else:
+Everything specific to the user's environment lives in environment variables and one optional config file,
+`bugsink-triage.config.json` in the state directory (default `~/.local/state/bugsink-triage-board/`, or the path in
+`BUGSINK_TRIAGE_CONFIG`). Check what is set before anything else:
 
 ```bash
-test -n "$BUGSINK_URL" && echo "url set" ; test -n "$BUGSINK_TOKEN$BUGSINK_TRIAGE_TOKEN" && echo "token set"
-curl -s -o /dev/null -w '%{http_code}\n' "$BUGSINK_URL/accounts/login/"
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/bugsink-triage/scripts/config.py" show
 ```
 
-- `BUGSINK_URL`: the server's base URL, no trailing path.
-- `BUGSINK_TOKEN`: a token that can read projects, issues and events. Used for every read.
-- `BUGSINK_TRIAGE_TOKEN`: a token that can also comment and triage. Used only by `act.py`.
-- `BUGSINK_TAGS`: optional comma list of event tags to print (default `environment,release,request.id,component`).
+It prints the server, how each token resolves (never the token), the projects, tags, repos, PR owners, hand-off
+timing and style note. If something is missing, tell the user which setting and point them to the README section
+"Adapting it to your environment". `config.py init` writes a commented example config. Then confirm the server
+answers (`curl -s -o /dev/null -w '%{http_code}\n' "<server>/accounts/login/"`): `200` means it is reachable. A
+timeout or DNS failure means a VPN or tunnel is down, so tell the user and stop.
 
-A `200` from the login page means the server is reachable. A timeout or DNS failure means a VPN or tunnel is
-down, so tell the user and stop. If a variable is missing, tell the user which one and how to make a token
-(Bugsink, Tokens menu, choose the capabilities; see the README). Never print, log, commit or paste a token,
-and never ask the user to paste one into the chat.
+- Server: `BUGSINK_URL` (or `baseUrl` in the config).
+- Read token: `BUGSINK_TOKEN`, used for every read. Write token: `BUGSINK_TRIAGE_TOKEN`, used only by `act.py`.
+  The config can rename these variables or give a command that prints the token.
+- Tags to print per event: `BUGSINK_TAGS` or `tags` (default `environment,release,request.id,component`).
+- `projects`, `repos`, `prSessions`, `handoffDueHours` and `styleNote` are described in the README.
+
+Never print, log, commit or paste a token, and never ask the user to paste one into the chat. If the config has a
+`styleNote`, follow it when you word reports, comments and hand-off briefs.
 
 ## Check: what is open
 
@@ -111,7 +117,7 @@ step, a link to the issue in Bugsink and choices for the user. It needs the Arti
 capability, which exist only in Claude Code connected to claude.ai. If they are not available, skip this
 section: everything above works without it.
 
-State lives in `$BUGSINK_BOARD_DIR` (default `~/.local/state/bugsink-triage-board`): `verdicts.json` (merge each
+State lives in `$BUGSINK_BOARD_DIR` (or `stateDir` in the config; default `~/.local/state/bugsink-triage-board`): `verdicts.json` (merge each
 triage's verdicts into it; issues no longer open are ignored), `artifact-url.txt` (the board's link),
 `board.html`, `current.json` (the live copy of the data) and `last-synced.json`. Make the folder if it is missing.
 
@@ -146,11 +152,43 @@ sentence. Cards show Submitted, Changed and Done from that collection.
 
 **GitHub awareness (optional, needs the `gh` CLI, signed in).** A `_meta.needs` entry may be
 `{"text": "...", "url": "<pull request URL>"}`: each build reads the PR's state with `gh`, so a merged PR lands its
-step and drops its line. With `_meta.repos` (`["owner/repo", ...]`) the board also finds open PRs that mention an
-open issue's id in their title, body or branch, adds a "Merge ..." line and links the PR on the card.
-`board.py --prs-only` re-reads GitHub alone in a few seconds, with no Bugsink call, and prints `changed` or
-`no change` against `last-synced.json`. When it prints `changed`, write `current.json` to `board/current` as
-above and copy it over `last-synced.json`. `--no-prs` skips GitHub.
+step and drops its line. With `repos` (in `_meta` or the config; `["owner/repo", ...]`) the board also finds open
+PRs that mention an open issue's id in their title, body or branch, adds a "Merge ..." line and links the PR on the
+card. `board.py --prs-only` re-reads GitHub alone in a few seconds, with no Bugsink call, and prints `changed` or
+`no change` against `last-synced.json`. When it prints `changed`, write `current.json` to `board/current` as above
+and copy it over `last-synced.json`. `--no-prs` skips GitHub. Without `gh`, everything else works and the board
+just does not track PRs.
+
+**PR owners (optional).** `prSessions` (in `_meta` or the config) maps a PR URL to the session that owns it,
+`{"id": "...", "name": "..."}`. The board shows that name as text beside the PR's Merge line, since that is
+where its Merge button is. If your Claude Code app can list the PRs bound to a session, use that to fill the map;
+otherwise the user can write it by hand. Whoever merges a PR that touches an open issue refreshes the board straight
+after (`board.py --prs-only`, then the `board/current` write), so a merge shows in seconds.
+
+**Scheduling (optional).** The plugin ships no scheduled tasks. The README has a recipe for a daily triage and a
+frequent `--prs-only` refresh that the user can create themselves.
 
 The page is a snapshot of Bugsink and GitHub, so rebuild it after any resolve. It holds issue ids, device models
 and error text and never a token. Check the error text for anything private before publishing.
+
+## Hand-offs: make sure delegated work reports back
+
+When you give work to another session (a fix, a build, an update), do not rely on that session remembering to
+answer. This needs only Claude Code and the board's database. Without the Artifact tool, keep a list of what you
+delegated in your report and chase it yourself. Each hand-off has two parts.
+
+1. **A record on the board.** Run `handoff.py new --to-id <id> --to-name <name> --task "<what was asked>"
+   --step <_work code> --issues <friendly ids>`. It prints the document and a doc id. Write the document to the
+   `handoffs` collection with ArtifactData `set`. Its fields are `{to: {id, name}, task, step, issues, askedAt,
+   dueAt, status: "open"}`, and `dueAt` defaults to `handoffDueHours` (24) from now. The board lists it under
+   "Waiting on sessions" and on each issue's card, amber once overdue.
+2. **A close-out line in the brief.** End every hand-off message with the `close_out` line `handoff.py` prints. It
+   asks the session to send the evidence (a PR link, release or update ids) back to you, then to mark the record
+   done: ArtifactData `update` on `handoffs/<doc id>` with `status: "done"`, `doneAt` (ISO time) and `evidence`
+   (one plain sentence), pinned with `if_version`, giving it the artifact URL from `artifact-url.txt`.
+
+A delegated step is not landed until there is evidence: a merged PR (the refresh checks GitHub) or the ids the
+session reports. When you read a report, update the `_work` step, the issue's `action` text and the hand-off, then
+refresh the board. Report any overdue hand-off in your summary, chase it with a message to the session, and if the
+session is gone, say so and ask the user.
+

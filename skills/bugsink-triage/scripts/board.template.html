@@ -104,6 +104,12 @@ h1 { font-family: var(--font-display); font-size: 28px; font-weight: 700; margin
 .trace { font: 12px/1.4 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
 .opts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 2px; }
 .opts label { display: flex; gap: 6px; align-items: center; cursor: pointer; font-size: 14px; }
+.waits { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 14px; }
+.waits li { display: grid; gap: 2px; padding: 8px 10px; border-radius: 6px; background: var(--land-soft); color: var(--fg); border-left: 4px solid var(--land); }
+.waits li.overdue { background: var(--land-soft); border-left-color: var(--bug); }
+.waits li.done { background: transparent; border-left-color: var(--done); color: var(--muted); }
+.waits .when { font-size: 12px; color: var(--muted); }
+.waits li.overdue .when { color: var(--bug); font-weight: 600; }
 .status { margin: 6px 0; padding: 6px 10px; border-radius: 6px; font-size: 13px; border: 1px solid var(--line); }
 .status.pending { background: var(--land-soft); color: var(--land); border-color: transparent; }
 .status.done { background: var(--done-soft); color: var(--done); border-color: transparent; }
@@ -159,6 +165,11 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
 
   <div class="chips" id="chips"></div>
   <div id="list"></div>
+
+  <section class="flow" id="wait-box" aria-label="Waiting on sessions" hidden>
+    <div class="flow-head"><h2>Waiting on sessions</h2><span class="hint">Work handed to another session that has not reported back. Amber means overdue.</span></div>
+    <ul class="waits" id="waits"></ul>
+  </section>
 
   <section class="lists">
     <div class="panel"><h2>Needs you</h2><div id="needs"></div></div>
@@ -254,7 +265,7 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
       const who = el('div', 'who');
       who.appendChild(el('div', null, e.w.name));
       const br = el('div', 'br', LABEL[e.w.state] + (e.w.note ? ' · ' + e.w.note : ''));
-      (e.w.links || []).forEach(l => { br.append(' · '); const a = el('a', null, l.label); a.href = l.url; a.target = '_blank'; a.rel = 'noopener'; br.appendChild(a); if (l.pr) br.append(' (' + prNote(l.pr) + ')'); });
+      (e.w.links || []).forEach(l => { br.append(' · '); const a = el('a', null, l.label); a.href = l.url; a.target = '_blank'; a.rel = 'noopener'; br.appendChild(a); if (l.pr) br.append(' (' + prNote(l.pr) + ')'); if (l.session) br.appendChild(sessionLink(l.session)); });
       who.appendChild(br);
       li.appendChild(who);
       li.appendChild(el('span', 'blocks', e.n ? 'holds up ' + e.n : ''));
@@ -321,6 +332,32 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
   // is {submittedAt, choices:[{id, choice, comment}]}; Claude marks one handled with
   // {status:'done', handledAt, results:{ISSUE-ID:'what was done'}}.
   let decisions = [];
+  // Hand-offs: work given to another session. {to:{id,name}, task, step, issues[], askedAt, dueAt,
+  // status:'open'|'done', doneAt, evidence}. The delegate (or Claude) marks one done with the evidence.
+  let handoffs = [];
+  const isOpenHandoff = x => x.status !== 'done';
+  const overdue = x => isOpenHandoff(x) && x.dueAt && Date.now() > Date.parse(x.dueAt);
+  const dayTime = iso => { try { const d = new Date(iso); return d.toLocaleDateString([], { day: 'numeric', month: 'short' }) + ' ' + fmtTime(iso); } catch (e) { return ''; } };
+  function renderWaits() {
+    const box = document.getElementById('waits'); box.replaceChildren();
+    const open = handoffs.filter(isOpenHandoff).sort((a, b) => ((a.askedAt || '') > (b.askedAt || '') ? 1 : -1));
+    const dayAgo = Date.now() - 24 * 3600 * 1000;
+    const recent = handoffs.filter(x => !isOpenHandoff(x) && x.doneAt && Date.parse(x.doneAt) > dayAgo)
+      .sort((a, b) => ((b.doneAt || '') > (a.doneAt || '') ? 1 : -1)).slice(0, 4);
+    document.getElementById('wait-box').hidden = !open.length && !recent.length;
+    open.forEach(x => {
+      const li = el('li', overdue(x) ? 'overdue' : null);
+      li.append(el('div', null, ((x.to && x.to.name) || 'A session') + ': ' + x.task));
+      li.append(el('div', 'when', 'Asked ' + dayTime(x.askedAt) + (x.dueAt ? ', due ' + dayTime(x.dueAt) : '') + (overdue(x) ? ' · overdue, no report yet' : '') + ((x.issues || []).length ? ' · ' + x.issues.join(', ') : '')));
+      box.appendChild(li);
+    });
+    recent.forEach(x => {
+      const li = el('li', 'done');
+      li.append(el('div', null, 'Done: ' + ((x.to && x.to.name) || 'A session') + ': ' + x.task));
+      li.append(el('div', 'when', dayTime(x.doneAt) + (x.evidence ? ' · ' + x.evidence : '')));
+      box.appendChild(li);
+    });
+  }
   const fmtTime = iso => { try { return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; } };
   const wantedComment = id => needsComment(picked[id]) ? (comments[id] || '') : '';
   function latestFor(id) {
@@ -355,6 +392,9 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
       c.append(el('div', 'status ' + cls, text));
       if (cls === 'done') c.classList.add('handled');
     }
+    handoffs.filter(x => isOpenHandoff(x) && (x.issues || []).includes(i.id)).forEach(x => {
+      c.append(el('div', 'status ' + (overdue(x) ? 'changed' : 'pending'), 'Waiting on ' + ((x.to && x.to.name) || 'a session') + ' since ' + dayTime(x.askedAt) + ': ' + x.task + (overdue(x) ? ' (overdue)' : '')));
+    });
     if (i.cause) { const r = el('div', 'row'); r.append(el('span', null, 'Cause: '), document.createTextNode(i.cause)); c.append(r); }
     if (i.action) { const r = el('div', 'row'); r.append(el('span', null, 'Next: '), document.createTextNode(i.action + (i.owner ? ' (' + i.owner + ')' : ''))); c.append(r); }
     if ((i.prs || []).length) { const r = el('div', 'row'); r.append(el('span', null, 'Fix in review: '));
@@ -400,6 +440,8 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
   }
 
   const prNote = p => p ? (p.state === 'open' ? (p.draft ? 'draft' : 'open') : p.state) + (p.checks && p.checks !== 'none' ? ', checks ' + p.checks : '') : '';
+  // The session that owns a PR, as text: that is where its Merge button is.
+  function sessionLink(s) { return el('span', 'prnote', ' in ' + (s.name || 'its session')); }
   function fill(id, items) {
     const box = document.getElementById(id); box.replaceChildren();
     if (!Array.isArray(items) || !items.length) { box.appendChild(el('p', 'empty', 'Nothing open.')); return; }
@@ -410,6 +452,7 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
         if (x.url) { const a = el('a', null, x.text); a.href = x.url; a.target = '_blank'; a.rel = 'noopener'; li.appendChild(a); }
         else li.append(String(x.text));
         if (x.pr) li.appendChild(el('span', 'prnote', ' (' + prNote(x.pr) + ')'));
+        if (x.session) li.appendChild(sessionLink(x.session));
       } else li.append(String(x));
       ul.appendChild(li);
     });
@@ -418,7 +461,7 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
 
   let live = false;
   function renderAll() {
-    renderSummary(); renderQueue(); renderGraph(); renderIssues();
+    renderSummary(); renderQueue(); renderGraph(); renderIssues(); renderWaits();
     fill('needs', meta.needs); fill('questions', meta.questions);
     updateSubmit();
     document.getElementById('updated').textContent = 'Last updated ' + D.generated + (live ? ' · live' : ' · snapshot');
@@ -432,6 +475,7 @@ pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surf
     let db = null;
     try { db = window.claude && await window.claude.use('db'); } catch (e) {}
     if (!db) return;
+    db.collection('handoffs').onSnapshot(s => { handoffs = s.docs.map(d => d.data()); renderAll(); }, () => {});
     db.collection('decisions').onSnapshot(s => { decisions = s.docs.map(d => d.data()); renderAll(); }, () => {});
     db.doc('board/current').onSnapshot(s => {
       if (!s.exists) return;

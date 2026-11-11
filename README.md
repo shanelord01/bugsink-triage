@@ -46,6 +46,8 @@ settings):
 | `BUGSINK_TOKEN` | reading | API token that can read projects, issues and events |
 | `BUGSINK_TRIAGE_TOKEN` | writing | API token that can also comment and triage. Only `act.py` uses it, and only with `--yes` |
 | `BUGSINK_TAGS` | optional | Comma list of event tags to print. Default `environment,release,request.id,component` |
+| `BUGSINK_BOARD_DIR` | optional | State directory. Default `~/.local/state/bugsink-triage-board` |
+| `BUGSINK_TRIAGE_CONFIG` | optional | Path of the config file. Default `<state dir>/bugsink-triage.config.json` |
 
 Make the tokens in the Bugsink UI under **Tokens** (Bugsink 2.6.0 or later has capabilities). For reading, tick
 `projects:read`, `issues:read` and `events:read`. For writing, add `issues:comment` and `issues:triage`. Do not
@@ -104,27 +106,81 @@ new data is one small write and the choices you have not submitted yet survive. 
 template changes.
 
 **State directory.** The board keeps `verdicts.json`, `artifact-url.txt`, `current.json`, `last-synced.json` and
-`board.html` in `$BUGSINK_BOARD_DIR`, which defaults to `~/.local/state/bugsink-triage-board`.
+`board.html` in `$BUGSINK_BOARD_DIR` (or `stateDir` in the config file), which defaults to
+`~/.local/state/bugsink-triage-board`.
+
+**Hand-offs.** When Claude gives work to another session, `handoff.py` builds a record for the board's `handoffs`
+collection and a close-out line for the brief. The board lists open hand-offs under "Waiting on sessions" and on the
+issue's card, amber once overdue, and a step only lands with evidence such as a merged pull request. It needs only
+Claude Code and the board's database.
+
+**Pull request owners.** `prSessions` maps a pull request URL to the session that owns it, and the board shows that
+name beside the Merge line.
 
 **GitHub awareness (optional).** With the [`gh`](https://cli.github.com) CLI signed in, list repositories in
 `_meta.repos` of `verdicts.json`. Open pull requests that mention an open issue's id (in the title, body or branch
 name) become "Merge ..." lines and card links. A merged pull request lands its fix step and drops its line.
 `board.py --prs-only` re-reads GitHub in seconds without calling Bugsink and prints `changed` or `no change`.
 
-### Schedule it yourself
+## Adapting it to your environment
 
-The plugin ships no scheduled tasks. To triage daily and keep pull request state fresh, create your own with
-Claude Code's scheduling (the `/schedule` skill for cloud routines, or `/loop` inside a session), or with cron on a
-machine that stays on. For example:
+Everything specific to your setup lives in environment variables and one optional file,
+`bugsink-triage.config.json`, in the state directory. Create it with:
 
-```text
-Every weekday at 8am: run /bugsink-triage:check, triage anything new, rebuild the board and write board/current.
-Every hour:           run board.py --prs-only; if it prints "changed", write current.json to board/current.
+```bash
+python3 skills/bugsink-triage/scripts/config.py init    # copies the commented example, never overwrites
+python3 skills/bugsink-triage/scripts/config.py show    # what is in effect, and whether a token resolves (never prints it)
 ```
 
-The hourly job costs almost nothing when nothing changed, because `--prs-only` makes no Bugsink call and the job
-stops at `no change`. Run it more often if you want faster pull request updates. Scheduled runs need the same
-environment variables as an interactive session.
+Environment variables win over the file. Every field is optional. Keys that start with an underscore are ignored,
+so you can leave notes.
+
+| Field | Meaning |
+|---|---|
+| `baseUrl` | Server URL, used when the URL variable is unset |
+| `urlEnv`, `readTokenEnv`, `writeTokenEnv` | Names of the environment variables to read, if yours differ from `BUGSINK_URL`, `BUGSINK_TOKEN`, `BUGSINK_TRIAGE_TOKEN` |
+| `readTokenCommand`, `writeTokenCommand` | A command (an array, run without a shell) whose output is the token, used when the variable is unset |
+| `projects` | Project slugs, names or ids to check by default. Empty means all |
+| `tags` | Event tags worth showing in a triage |
+| `repos` | GitHub repositories (`owner/repo`) to search for pull requests that mention an open issue |
+| `prSessions` | Pull request URL to the owning session, `{"id": "...", "name": "..."}` |
+| `handoffDueHours` | Default hours until a hand-off is overdue. Default 24 |
+| `styleNote` | A sentence or two of house style for report wording. Claude follows it when it writes reports and comments |
+| `stateDir` | Where the board's files live. The config file itself stays where `BUGSINK_TRIAGE_CONFIG` or the default says |
+
+Some common setups and where they go:
+
+- **A private network address.** Put it in `baseUrl` (or export `BUGSINK_URL`) and connect to the network before
+  you run anything. The skill's first step checks the server answers and stops with a clear message if it does not.
+- **Tokens from a secret manager or OS credential store.** Set `readTokenCommand` and `writeTokenCommand` to the
+  command that prints each token, for example `["my-secret-tool", "get", "bugsink-read-token"]`. Nothing is
+  printed or stored by the plugin.
+- **Several projects.** Leave `projects` empty to cover them all, or list the ones you triage daily. Pass
+  `--project` to narrow a single run.
+- **Your own tag names.** List the tags your reporters set, such as a request id, a job id or a component, in
+  `tags`.
+- **Several repositories.** List them in `repos` so fixes are found whichever one they land in.
+- **Your house style.** Put it in `styleNote` instead of editing the skill.
+
+Optional pieces degrade quietly. Without the `gh` CLI the board skips pull request tracking. Without the Artifact
+tool and its database the skill still triages and reports in text, and the board and hand-off records are not
+available. Without scheduled tasks, run the commands yourself.
+
+### Schedule it
+
+The plugin ships no scheduled tasks. A recipe for a daily triage and a frequent pull request refresh, using
+Claude Code's scheduling (the `/schedule` skill for cloud routines, `/loop` inside a session) or cron on a machine
+that stays on:
+
+```text
+Every weekday at 8am: run /bugsink-triage:check, triage anything new, rebuild the board with board.py and write
+                      current.json to the board/current document. Report any overdue hand-off.
+Every hour or faster: run board.py --prs-only. If it prints "changed", write current.json to board/current and
+                      copy it over last-synced.json. If it prints "no change", stop.
+```
+
+`--prs-only` makes no Bugsink call, so it is cheap to run often. Scheduled runs need the same environment variables
+and config as an interactive session.
 
 ## Safety
 

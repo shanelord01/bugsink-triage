@@ -1,0 +1,22 @@
+{
+  "_comment": "Copy to <state dir>/bugsink-triage.config.json (or point BUGSINK_TRIAGE_CONFIG at it) and keep only what you need. Every field is optional. Environment variables win over this file. Keys starting with an underscore are ignored.",
+
+  "baseUrl": "https://bugsink.example.com",
+  "urlEnv": "BUGSINK_URL",
+  "readTokenEnv": "BUGSINK_TOKEN",
+  "writeTokenEnv": "BUGSINK_TRIAGE_TOKEN",
+  "readTokenCommand": ["my-secret-tool", "get", "bugsink-read-token"],
+  "writeTokenCommand": ["my-secret-tool", "get", "bugsink-triage-token"],
+
+  "projects": ["web", "api"],
+  "tags": ["environment", "release", "request.id", "component"],
+
+  "repos": ["acme/app", "acme/api"],
+  "prSessions": {
+    "https://github.com/acme/app/pull/12": { "id": "session-1", "name": "Checkout fix" }
+  },
+
+  "handoffDueHours": 24,
+  "styleNote": "Write reports in plain sentences, lead with the answer, and use our spelling and terms.",
+  "stateDir": "~/.local/state/bugsink-board"
+}

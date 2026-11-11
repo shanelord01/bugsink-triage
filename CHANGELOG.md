@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+- Config file `bugsink-triage.config.json` (example shipped) holds everything environment-specific: server URL,
+  token variable names or token commands, default projects, tags, GitHub repos, PR owners, hand-off timing, a
+  style note and the state directory. Environment variables still win. New `config.py show|init|path`.
+- Hand-offs: a `handoffs` collection on the board database, a "Waiting on sessions" panel, per-card lines (amber
+  when overdue), `handoff.py` to build the record and the close-out line for a brief, and the rule that a step
+  lands only with evidence. Needs only Claude Code and the board database.
+- `prSessions` shows the owning session's name beside a pull request's Merge line.
+- Skill text is neutral: house rules moved to the optional `styleNote`. Optional pieces (`gh`, the Artifact tool,
+  scheduling) degrade quietly.
+- README section "Adapting it to your environment" and a scheduling recipe. Tests cover the config, hand-offs and
+  `prSessions` with synthetic data.
+
 ## 0.2.0
 
 - Triage board rebuilt: progress band, waiting-to-land list, hover-traced dependency graph of fix steps

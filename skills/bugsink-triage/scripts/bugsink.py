@@ -1,45 +1,111 @@
-"""Small Bugsink API client shared by check.py, board.py and act.py. Standard library only.
+"""Small Bugsink API client shared by check.py, board.py, act.py and handoff.py. Standard library only.
 
-Configuration comes from the environment:
-  BUGSINK_URL           base URL of the server, e.g. https://bugsink.example.com (required)
+Configuration comes from the environment first, then from an optional config file (see
+bugsink-triage.config.example.json and the README, "Adapting it to your environment"):
+
+  BUGSINK_URL           base URL of the server, e.g. https://bugsink.example.com
   BUGSINK_TOKEN         read token (falls back to BUGSINK_TRIAGE_TOKEN when unset)
   BUGSINK_TRIAGE_TOKEN  token allowed to comment, resolve and mute (only act.py uses it for writes)
   BUGSINK_TAGS          comma separated event tags to show (default below)
+  BUGSINK_BOARD_DIR     state directory (default ~/.local/state/bugsink-triage-board)
+  BUGSINK_TRIAGE_CONFIG path of the config file (default <state dir>/bugsink-triage.config.json)
 
-Tokens are never printed.
+The config file can rename those variables, read a token from a command instead, and set the
+defaults for projects, tags, repos, PR owners and hand-off timing. Tokens are never printed.
 """
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 DEFAULT_TAGS = "environment,release,request.id,component"
+CONFIG_NAME = "bugsink-triage.config.json"
+
+
+def default_state_dir() -> Path:
+    return Path(os.environ.get("BUGSINK_BOARD_DIR") or Path.home() / ".local/state/bugsink-triage-board").expanduser()
+
+
+def config_path() -> Path:
+    env = os.environ.get("BUGSINK_TRIAGE_CONFIG")
+    return Path(env).expanduser() if env else default_state_dir() / CONFIG_NAME
+
+
+_CONFIG: dict | None = None
+
+
+def config() -> dict:
+    """The user's config file, or {} when there is none. Keys starting with _ are dropped."""
+    global _CONFIG
+    if _CONFIG is None:
+        path = config_path()
+        _CONFIG = {}
+        if path.exists():
+            try:
+                raw = json.loads(path.read_text())
+            except ValueError as e:
+                sys.exit(f"{path} is not valid JSON: {e}")
+            if not isinstance(raw, dict):
+                sys.exit(f"{path} must hold a JSON object.")
+            _CONFIG = {k: v for k, v in raw.items() if not k.startswith("_")}
+    return _CONFIG
+
+
+def state_dir() -> Path:
+    """Where verdicts.json, current.json and the rest live. The config file itself stays where
+    BUGSINK_TRIAGE_CONFIG or the default state directory says, so it can always be found."""
+    if os.environ.get("BUGSINK_BOARD_DIR"):
+        return default_state_dir()
+    custom = config().get("stateDir")
+    return Path(custom).expanduser() if custom else default_state_dir()
+
+
+def _from_command(argv) -> str:
+    if not (isinstance(argv, list) and argv and all(isinstance(a, str) for a in argv)):
+        return ""
+    try:  # argv list, no shell; the output is the token and is never printed
+        return subprocess.run(argv, capture_output=True, text=True, check=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def base_url() -> str:
-    url = os.environ.get("BUGSINK_URL", "").strip().rstrip("/")
+    cfg = config()
+    url = (os.environ.get(cfg.get("urlEnv") or "BUGSINK_URL") or cfg.get("baseUrl") or "").strip().rstrip("/")
     if not url:
-        sys.exit("BUGSINK_URL is not set. Export the server's base URL, e.g. https://bugsink.example.com")
+        sys.exit("The Bugsink URL is not set. Export BUGSINK_URL (e.g. https://bugsink.example.com) or set baseUrl in the config file.")
     return url + "/api/canonical/0"
 
 
 def tags_to_show() -> tuple:
-    raw = os.environ.get("BUGSINK_TAGS") or DEFAULT_TAGS
+    cfg = config().get("tags")
+    raw = os.environ.get("BUGSINK_TAGS") or (",".join(cfg) if isinstance(cfg, list) else "") or DEFAULT_TAGS
     return tuple(t.strip() for t in raw.split(",") if t.strip())
 
 
+def default_projects() -> list[str]:
+    p = config().get("projects")
+    return [str(x) for x in p] if isinstance(p, list) else []
+
+
 def read_token() -> str:
-    t = (os.environ.get("BUGSINK_TOKEN") or os.environ.get("BUGSINK_TRIAGE_TOKEN") or "").strip()
+    cfg = config()
+    t = (os.environ.get(cfg.get("readTokenEnv") or "BUGSINK_TOKEN")
+         or os.environ.get(cfg.get("writeTokenEnv") or "BUGSINK_TRIAGE_TOKEN") or "").strip()
+    t = t or _from_command(cfg.get("readTokenCommand")) or _from_command(cfg.get("writeTokenCommand"))
     if not t:
-        sys.exit("No token: export BUGSINK_TOKEN (read) or BUGSINK_TRIAGE_TOKEN (read and write).")
+        sys.exit("No token: export BUGSINK_TOKEN (read) or BUGSINK_TRIAGE_TOKEN (read and write), or set a token command in the config file.")
     return t
 
 
 def write_token() -> str:
-    t = os.environ.get("BUGSINK_TRIAGE_TOKEN", "").strip()
+    cfg = config()
+    t = (os.environ.get(cfg.get("writeTokenEnv") or "BUGSINK_TRIAGE_TOKEN") or "").strip() or _from_command(cfg.get("writeTokenCommand"))
     if not t:
-        sys.exit("No write token: export BUGSINK_TRIAGE_TOKEN (needs issues:comment and issues:triage).")
+        sys.exit("No write token: export BUGSINK_TRIAGE_TOKEN (needs issues:comment and issues:triage), or set writeTokenCommand in the config file.")
     return t
 
 
@@ -85,6 +151,7 @@ def projects(tok: str) -> list[dict]:
 
 def pick_projects(all_projects: list[dict], wanted: list[str] | None) -> list[dict]:
     """Match --project values against slug, name or id. No values means every project."""
+    wanted = wanted or default_projects()
     if not wanted:
         return all_projects
     out = []

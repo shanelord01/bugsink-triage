@@ -40,7 +40,10 @@ the heading line and the two lists at the foot of the page. A "needs" entry is a
 the link is a GitHub pull request the board reads its state with the gh CLI (open, draft, merged, and
 CI) and drops the line once it merges. With "repos" in _meta (["owner/repo", ...]) the board also finds
 open pull requests that mention an open issue's id in their title, body or branch, adds a "Merge ..."
-line for each and links it on the issue's card. A work step whose links are all merged PRs shows as
+line for each and links it on the issue's card. "_meta.prSessions" maps a PR url to the session that
+owns it ({"https://github.com/acme/app/pull/12": {"id": "session-1", "name": "Checkout fix"}}); the page
+shows that name beside the PR's Merge line, since that is where its Merge button is. "repos" and
+"prSessions" also default from the config file, so you can set them once there. A work step whose links are all merged PRs shows as
 landed. GitHub awareness is optional: it needs the gh CLI, and --no-prs skips it. With no "_work" the
 band shows how many open issues are triaged.
 
@@ -56,6 +59,10 @@ issue ids, device models and error text, never a token. Besides board.html it wr
 it: the live copy of the data, to be written to the document board/current with ArtifactData. The page
 paints from its embedded copy, then follows that document, so a data update needs no republish. Republish
 only when the template changes.
+
+The page also shows work handed to other sessions: documents in the board database's "handoffs"
+collection ({to:{id,name}, task, step, issues, askedAt, dueAt, status, doneAt, evidence}) appear under
+"Waiting on sessions" and on each issue's card, amber once overdue. handoff.py builds them.
 
 State lives in $BUGSINK_BOARD_DIR (default ~/.local/state/bugsink-triage-board): verdicts.json,
 artifact-url.txt (the board's Artifact link, so a republish keeps it), current.json, last-synced.json and
@@ -83,7 +90,7 @@ DEFAULT_OPTIONS = {
     "parked": ["Leave parked", "Resolve with a comment", "Investigate now"],
     "untriaged": ["Investigate", "Leave open", "Resolve with a comment"],
 }
-STATE = Path(os.environ.get("BUGSINK_BOARD_DIR") or Path.home() / ".local/state/bugsink-triage-board")
+STATE = bs.state_dir()  # BUGSINK_BOARD_DIR, else stateDir in the config file, else the default
 PR_URL = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/pull/\d+$")
 VERDICTS = ("bug", "regression", "expected", "outside", "parked", "untriaged")
 
@@ -211,6 +218,28 @@ def suggested_comment(r: dict) -> str:
     return f"{head} Resolved in the {f"{dt.date.today().day} {dt.date.today():%b %Y}"} triage. It re-opens if it recurs."
 
 
+def annotate_sessions(work: list, meta: dict) -> None:
+    """Tag each "needs" line and work link with the session that owns its PR, from
+    _meta.prSessions ({"<pr url>": {"id": "...", "name": "..."}}). The page shows the name as text."""
+    owners = meta.get("prSessions") or {}
+    for n in meta.get("needs") or []:
+        if isinstance(n, dict) and n.get("url") in owners:
+            n["session"] = owners[n["url"]]
+    for w in work:
+        for l in w.get("links") or []:
+            if l.get("url") in owners:
+                l["session"] = owners[l["url"]]
+
+
+def apply_config_defaults(meta: dict) -> None:
+    """repos and prSessions from the config file fill in what _meta leaves out."""
+    cfg = bs.config()
+    if cfg.get("repos") and not meta.get("repos"):
+        meta["repos"] = cfg["repos"]
+    if cfg.get("prSessions"):
+        meta["prSessions"] = {**cfg["prSessions"], **(meta.get("prSessions") or {})}
+
+
 def refresh_prs_only() -> None:
     """Re-read GitHub for the PRs the board already knows, and for new PRs that mention an open
     issue, without touching Bugsink. Works on the last build (current.json), so it is cheap enough
@@ -220,10 +249,12 @@ def refresh_prs_only() -> None:
         sys.exit("No current.json yet: run board.py once first.")
     data = json.loads(cur.read_text())
     rows, work, meta = data["issues"], data.get("work") or [], data.get("meta") or {}
+    apply_config_defaults(meta)
     for r in rows:
         r["prs"] = []  # rediscovered below, so a PR is never listed twice
     discover_prs(rows, meta)
     enrich_prs(work, meta)
+    annotate_sessions(work, meta)
     data.update(issues=rows, work=work, meta=meta)
     cur.write_text(json.dumps(data))
     synced = STATE / "last-synced.json"
@@ -259,9 +290,11 @@ def main() -> None:
         r["comment"] = v.get("comment") or suggested_comment(r)
     work = verdicts.get("_work") or []
     meta = verdicts.get("_meta") or {}
+    apply_config_defaults(meta)
     if not a.no_prs:
         discover_prs(rows, meta)
         enrich_prs(work, meta)
+        annotate_sessions(work, meta)
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     # A closing script tag inside the JSON would end the script element early.
     data = json.dumps({"generated": stamp, "issues": rows, "work": work, "meta": meta}).replace("</", "<\\/")
