@@ -1,0 +1,350 @@
+<title>Bugsink triage board</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: header, a summary band (progress and verdict counts), the landing queue, a dependency graph, one card per open issue, then two open lists and the submit bar. Summary band, landing queue and dependency graph are adapted from the varis-plan-tracker plugin (MIT, see THIRD_PARTY_NOTICES.md). */
+:root {
+  --bg: #f3f6f8; --surface: #ffffff; --fg: #16232c; --muted: #5d6f7b; --line: #d9e2e8;
+  --accent: #2b7fb0; --done: #2e8a5f; --done-soft: #e2f3ea; --work: #2b7fb0; --work-soft: #e2eff7;
+  --land: #b5730f; --land-soft: #fbefdc; --todo: #8a9aa5; --todo-soft: #eef2f4; --track: #dfe7ec;
+  --bug: #c4321f; --regression: #a8460a; --expected: #2f7a43; --outside: #4a5fa8; --parked: #7a6a1f; --untriaged: #6b7280;
+  --font-display: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f171d; --surface: #16212a; --fg: #e3ebf0; --muted: #93a6b2; --line: #263540;
+    --accent: #6cb6e3; --done: #5cc493; --done-soft: #183428; --work: #6cb6e3; --work-soft: #17303f;
+    --land: #e3a54a; --land-soft: #3a2c15; --todo: #7f909b; --todo-soft: #1d2a33; --track: #22313b;
+    --bug: #ff7b66; --regression: #ffa467; --expected: #6fcf8a; --outside: #8fa2ee; --parked: #d9c35f; --untriaged: #9aa4b0;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f171d; --surface: #16212a; --fg: #e3ebf0; --muted: #93a6b2; --line: #263540;
+  --accent: #6cb6e3; --done: #5cc493; --done-soft: #183428; --work: #6cb6e3; --work-soft: #17303f;
+  --land: #e3a54a; --land-soft: #3a2c15; --todo: #7f909b; --todo-soft: #1d2a33; --track: #22313b;
+  --bug: #ff7b66; --regression: #ffa467; --expected: #6fcf8a; --outside: #8fa2ee; --parked: #d9c35f; --untriaged: #9aa4b0;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.45; margin: 0; }
+.wrap { max-width: 920px; margin: 0 auto; padding-block: 28px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 26px; }
+header { display: grid; gap: 6px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--font-display); font-size: 28px; font-weight: 700; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); margin: 0; }
+.summary { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: grid; gap: 14px; min-width: 0; }
+.big { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.big .pct { font-family: var(--font-display); font-size: 44px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.big .of { color: var(--muted); }
+.track { height: 14px; border-radius: 7px; background: var(--track); overflow: hidden; display: flex; }
+.track span { height: 100%; }
+.track .s-landed { background: var(--done); }
+.track .s-landing { background: var(--land); }
+.track .s-running { background: var(--work); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.legend b { color: var(--fg); font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 999px; padding: 4px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.chip[aria-pressed="true"] { border-color: var(--fg); }
+.chip b { margin-left: 6px; }
+.flow { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; display: grid; gap: 12px; min-width: 0; }
+.flow-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.flow h2, .panel h2, .sect { font-family: var(--font-display); font-size: 15px; margin: 0; font-weight: 600; }
+.sect { color: var(--muted); margin: 0 0 -12px; }
+.hint { font-size: 12px; color: var(--muted); }
+.queue { list-style: none; margin: 0; padding: 0; display: grid; }
+.queue li { display: grid; grid-template-columns: 34px 52px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.queue li:first-child { border-top: 0; }
+.queue .pos { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+.queue .who { min-width: 0; }
+.queue .br { font-family: var(--font-mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.queue .br a { color: var(--accent); text-decoration: none; }
+.queue .br a:hover, .queue .br a:focus-visible { text-decoration: underline; }
+.queue .blocks { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.queue li.now .pos { color: var(--land); font-weight: 600; }
+.code { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.graph-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.graph-scroll svg { display: block; }
+.g-col { font-family: var(--font-mono); font-size: 11px; fill: var(--muted); letter-spacing: .05em; text-transform: uppercase; }
+.g-node { cursor: default; outline: none; }
+.g-node rect.box { stroke-width: 1.5; }
+.g-node.landed rect.box { fill: var(--done-soft); stroke: var(--done); }
+.g-node.landing rect.box { fill: var(--land-soft); stroke: var(--land); }
+.g-node.running rect.box { fill: var(--work-soft); stroke: var(--work); }
+.g-node.todo rect.box { fill: var(--surface); stroke: var(--todo); stroke-dasharray: 4 3; }
+.g-node.todo.ready rect.box { stroke-dasharray: none; stroke: var(--fg); }
+.g-node.issue rect.box { fill: var(--surface); stroke: var(--c); stroke-width: 2.5; }
+.g-node .c { font-family: var(--font-mono); font-size: 12px; font-weight: 500; fill: var(--fg); }
+.g-node .n { font-family: var(--font-body); font-size: 11.5px; fill: var(--muted); }
+.g-node:focus-visible rect.box { stroke-width: 3; }
+.g-edge { fill: none; stroke-width: 1.5; }
+.g-edge.met { stroke: var(--line); }
+.g-edge.open { stroke: var(--land); }
+.graph.focus .g-node:not(.hi) { opacity: .25; }
+.graph.focus .g-edge:not(.hi) { opacity: .12; }
+.graph.focus .g-edge.hi { stroke-width: 2.5; }
+.card { background: var(--surface); border: 1px solid var(--line); border-left: 5px solid var(--c); border-radius: 8px; padding: 12px 14px; margin: 0 0 10px; min-width: 0; }
+.top { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+.id { font-weight: 700; }
+.tag { color: var(--c); font-weight: 600; text-transform: uppercase; font-size: 12px; letter-spacing: .04em; }
+.meta { color: var(--muted); font-size: 13px; }
+.err { margin: 6px 0; overflow-wrap: anywhere; }
+.row { margin: 4px 0; font-size: 14px; }
+.row span { color: var(--muted); }
+.trace { font: 12px/1.4 var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+.opts { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 8px 0 2px; }
+.opts label { display: flex; gap: 6px; align-items: center; cursor: pointer; font-size: 14px; }
+.opts label span { color: var(--muted); font-size: 12px; }
+.lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; min-width: 0; }
+.panel h2 { margin-bottom: 8px; }
+.panel ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 14px; }
+.panel .empty { color: var(--muted); font-size: 14px; margin: 0; }
+.submitbar { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; padding-bottom: max(10px, env(safe-area-inset-bottom, 0px)); }
+.submitbar button { font: inherit; border: 1px solid var(--fg); background: var(--fg); color: var(--bg); border-radius: 6px; padding: 7px 16px; cursor: pointer; }
+.submitbar button.alt { background: transparent; color: var(--fg); }
+.submitbar .msg { color: var(--muted); font-size: 13px; flex: 1 1 200px; }
+pre.out { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; font: 12px/1.5 var(--font-mono); margin: 0; user-select: all; }
+.foot { font-size: 12px; color: var(--muted); font-family: var(--font-mono); }
+@media (max-width: 560px) {
+  .big .pct { font-size: 36px; }
+  .queue li { grid-template-columns: 30px 44px minmax(0, 1fr); }
+  .queue .blocks { grid-column: 3; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow" id="source">Bugsink</div>
+    <h1>Bugsink triage board</h1>
+    <p class="sub" id="subtitle"></p>
+  </header>
+
+  <section class="summary" aria-label="Progress">
+    <div class="big"><span class="pct" id="pct">-</span><span class="of" id="of"></span></div>
+    <div class="track" id="track" role="img" aria-label="Progress bar"></div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <section class="flow" id="queue-box" aria-label="Landing queue" hidden>
+    <div class="flow-head"><h2>Waiting to land</h2><span class="hint">Fixes in review or in progress. The one holding up the most downstream steps goes first.</span></div>
+    <ol class="queue" id="queue"></ol>
+  </section>
+
+  <section class="flow" id="graph-box" aria-label="Dependencies" hidden>
+    <div class="flow-head"><h2>What blocks what</h2><span class="hint">Left to right in order. Orange lines are steps not yet landed. Thick outlines are open Bugsink issues. Hover or tab to a box to trace its chain.</span></div>
+    <div class="graph-scroll"><svg id="graph" class="graph" role="img" aria-label="Dependency graph of fixes and issues"></svg></div>
+  </section>
+
+  <div class="chips" id="chips"></div>
+  <div id="list"></div>
+
+  <section class="lists">
+    <div class="panel"><h2>Needs you</h2><div id="needs"></div></div>
+    <div class="panel"><h2>Questions for you</h2><div id="questions"></div></div>
+  </section>
+
+  <div class="submitbar"><button id="submit" type="button">Submit choices</button><button id="copy" class="alt" type="button">Copy as message</button><span class="msg" id="msg">Pick what to do for each issue, then submit.</span></div>
+  <pre class="out" id="out" hidden></pre>
+  <div class="foot" id="updated"></div>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+(function () {
+  const D = JSON.parse(document.getElementById('data').textContent);
+  const issues = D.issues, work = D.work || [], meta = D.meta || {};
+  const WEIGHT = { S: 1, M: 2, L: 3 };
+  const LABEL = { landed: 'Landed', landing: 'In review', running: 'In progress', todo: 'Not started' };
+  const COLOR = { landed: 'var(--done)', landing: 'var(--land)', running: 'var(--work)', todo: 'var(--todo)' };
+  const ORDER = ['bug', 'regression', 'untriaged', 'parked', 'expected', 'outside'];
+  const picked = {};
+  let filter = null;
+  issues.forEach(i => { picked[i.id] = i.options[0]; });
+
+  const el = (t, c, x) => { const e = document.createElement(t); if (c) e.className = c; if (x != null) e.textContent = x; return e; };
+  const byCode = () => { const m = {}; work.forEach(w => { m[w.code] = w; }); return m; };
+  const openDeps = w => { const m = byCode(); return (w.deps || []).filter(d => !m[d] || m[d].state !== 'landed'); };
+  const message = () => 'Bugsink triage board ' + D.generated + ':\n' + issues.map(i => '- ' + i.id + ': ' + picked[i.id]).join('\n');
+
+  // Transitive dependents of each work item: how many steps it holds up.
+  function blocksCount(code) {
+    const seen = new Set(); const stack = [code];
+    while (stack.length) { const c = stack.pop(); work.forEach(w => { if ((w.deps || []).includes(c) && !seen.has(w.code)) { seen.add(w.code); stack.push(w.code); } }); }
+    return seen.size;
+  }
+
+  function renderSummary() {
+    const track = document.getElementById('track'); track.replaceChildren();
+    const lg = document.getElementById('legend'); lg.replaceChildren();
+    document.getElementById('subtitle').textContent = meta.subtitle || '';
+    if (meta.eyebrow) document.getElementById('source').textContent = meta.eyebrow;
+    if (work.length) {
+      const total = work.reduce((s, w) => s + (WEIGHT[w.size] || 2), 0);
+      const by = { landed: 0, landing: 0, running: 0, todo: 0 }, cnt = { landed: 0, landing: 0, running: 0, todo: 0 };
+      work.forEach(w => { const st = by[w.state] != null ? w.state : 'todo'; by[st] += WEIGHT[w.size] || 2; cnt[st]++; });
+      const pct = Math.round(by.landed / total * 100);
+      document.getElementById('pct').textContent = pct + '%';
+      document.getElementById('of').textContent = cnt.landed + ' of ' + work.length + ' fix steps landed, ' + issues.length + ' issues open';
+      ['landed', 'landing', 'running'].forEach(s => { const sp = el('span', 's-' + s); sp.style.width = (by[s] / total * 100) + '%'; track.appendChild(sp); });
+      track.setAttribute('aria-label', pct + '% landed');
+      ['landed', 'landing', 'running', 'todo'].forEach(s => { const i = el('span'); const d = el('span', 'dot'); d.style.background = COLOR[s]; i.append(d, el('b', null, String(cnt[s])), ' ' + LABEL[s].toLowerCase()); lg.appendChild(i); });
+    } else {
+      const done = issues.filter(i => i.verdict !== 'untriaged').length;
+      document.getElementById('pct').textContent = issues.length ? Math.round(done / issues.length * 100) + '%' : '-';
+      document.getElementById('of').textContent = issues.length ? done + ' of ' + issues.length + ' open issues triaged' : 'No open issues.';
+      const sp = el('span', 's-landed'); sp.style.width = (issues.length ? done / issues.length * 100 : 0) + '%'; track.appendChild(sp);
+    }
+  }
+
+  function renderQueue() {
+    const box = document.getElementById('queue'); box.replaceChildren();
+    const q = work.filter(w => w.state === 'landing' || w.state === 'running')
+      .map(w => ({ w, n: blocksCount(w.code) }))
+      .sort((a, b) => (a.w.state === b.w.state ? 0 : a.w.state === 'landing' ? -1 : 1) || b.n - a.n);
+    document.getElementById('queue-box').hidden = !q.length;
+    q.forEach((e, i) => {
+      const li = el('li', i === 0 ? 'now' : null);
+      li.appendChild(el('span', 'pos', i === 0 ? 'Next' : String(i + 1)));
+      li.appendChild(el('span', 'code', e.w.code));
+      const who = el('div', 'who');
+      who.appendChild(el('div', null, e.w.name));
+      const br = el('div', 'br', LABEL[e.w.state] + (e.w.note ? ' · ' + e.w.note : ''));
+      (e.w.links || []).forEach(l => { br.append(' · '); const a = el('a', null, l.label); a.href = l.url; a.target = '_blank'; a.rel = 'noopener'; br.appendChild(a); });
+      who.appendChild(br);
+      li.appendChild(who);
+      li.appendChild(el('span', 'blocks', e.n ? 'holds up ' + e.n : ''));
+      box.appendChild(li);
+    });
+  }
+
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const sv = (tag, attrs, text) => { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+  function renderGraph() {
+    const svg = document.getElementById('graph'); svg.replaceChildren();
+    document.getElementById('graph-box').hidden = !work.length;
+    if (!work.length) return;
+    // Nodes: every work item, plus each open issue that a work item fixes.
+    const nodes = work.map(w => ({ code: w.code, name: w.short || w.name, state: w.state, deps: w.deps || [], title: w.name, w }));
+    const fixed = new Set();
+    work.forEach(w => (w.fixes || []).forEach(f => fixed.add(f)));
+    issues.filter(i => fixed.has(i.id)).forEach(i => nodes.push({ code: i.id, name: i.type || i.value, state: 'issue', verdict: i.verdict, deps: work.filter(w => (w.fixes || []).includes(i.id)).map(w => w.code), title: i.id + ': ' + i.value }));
+    const m = {}; nodes.forEach(n => { m[n.code] = n; });
+    const level = {};
+    const lv = (c, seen) => { if (level[c] != null) return level[c]; const n = m[c]; if (!n || seen.has(c)) return 0; seen.add(c);
+      const ds = n.deps.filter(d => m[d]); level[c] = ds.length ? 1 + Math.max(...ds.map(d => lv(d, seen))) : 0; return level[c]; };
+    nodes.forEach(n => lv(n.code, new Set()));
+    const cols = []; nodes.forEach(n => { (cols[level[n.code]] = cols[level[n.code]] || []).push(n); });
+    const NW = 168, NH = 44, GX = 48, GY = 12, TOP = 26, PAD = 4, pos = {};
+    cols.forEach((col, ci) => {
+      col.sort((a, b) => { const ya = a.deps.filter(d => pos[d]).map(d => pos[d].y), yb = b.deps.filter(d => pos[d]).map(d => pos[d].y);
+        const ma = ya.length ? ya.reduce((s, v) => s + v, 0) / ya.length : 0, mb = yb.length ? yb.reduce((s, v) => s + v, 0) / yb.length : 0; return ma - mb; });
+      col.forEach((n, ri) => { pos[n.code] = { x: PAD + ci * (NW + GX), y: TOP + ri * (NH + GY) }; });
+    });
+    const W = PAD * 2 + cols.length * NW + (cols.length - 1) * GX, H = TOP + Math.max(...cols.map(c => c.length)) * (NH + GY) + PAD;
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.setAttribute('width', W); svg.setAttribute('height', H);
+    cols.forEach((c, ci) => svg.appendChild(sv('text', { x: PAD + ci * (NW + GX), y: 14, class: 'g-col' }, 'Step ' + (ci + 1))));
+    const edges = [];
+    nodes.forEach(n => n.deps.forEach(d => {
+      if (!pos[d]) return; const a = pos[d], b = pos[n.code];
+      const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x, y2 = b.y + NH / 2, mx = (x1 + x2) / 2;
+      const met = m[d].state === 'landed';
+      const p = sv('path', { d: 'M' + x1 + ',' + y1 + ' C' + mx + ',' + y1 + ' ' + mx + ',' + y2 + ' ' + x2 + ',' + y2, class: 'g-edge ' + (met ? 'met' : 'open') });
+      p.dataset.from = d; p.dataset.to = n.code; edges.push(p); svg.appendChild(p);
+    }));
+    const els = {};
+    nodes.forEach(n => {
+      const ready = n.state === 'todo' && !n.deps.some(d => !m[d] || m[d].state !== 'landed');
+      const g = sv('g', { class: 'g-node ' + n.state + (ready ? ' ready' : ''), tabindex: '0', transform: 'translate(' + pos[n.code].x + ',' + pos[n.code].y + ')' });
+      if (n.state === 'issue') g.style.setProperty('--c', 'var(--' + n.verdict + ')');
+      g.appendChild(sv('title', {}, n.title + (n.state === 'issue' ? '' : ' · ' + (LABEL[n.state] || ''))));
+      g.appendChild(sv('rect', { class: 'box', width: NW, height: NH, rx: 7 }));
+      g.appendChild(sv('text', { class: 'c', x: 10, y: 18 }, n.code));
+      const label = n.name || ''; g.appendChild(sv('text', { class: 'n', x: 10, y: 34 }, label.length > 26 ? label.slice(0, 25) + '…' : label));
+      els[n.code] = g; svg.appendChild(g);
+    });
+    const chain = (start, dir) => { const out = new Set([start]); const stack = [start];
+      while (stack.length) { const c = stack.pop(); edges.forEach(e => { const from = e.dataset.from, to = e.dataset.to; const nxt = dir === 'up' ? (to === c ? from : null) : (from === c ? to : null); if (nxt && !out.has(nxt)) { out.add(nxt); stack.push(nxt); } }); }
+      return out; };
+    const focusOn = code => { const set = new Set([...chain(code, 'up'), ...chain(code, 'down')]); svg.classList.add('focus');
+      Object.keys(els).forEach(c => els[c].classList.toggle('hi', set.has(c)));
+      edges.forEach(e => e.classList.toggle('hi', set.has(e.dataset.from) && set.has(e.dataset.to))); };
+    const clear = () => svg.classList.remove('focus');
+    Object.keys(els).forEach(c => { const g = els[c]; g.addEventListener('mouseenter', () => focusOn(c)); g.addEventListener('mouseleave', clear); g.addEventListener('focus', () => focusOn(c)); g.addEventListener('blur', clear); });
+  }
+
+  function card(i) {
+    const c = el('div', 'card'); c.style.setProperty('--c', 'var(--' + i.verdict + ')');
+    const top = el('div', 'top');
+    top.append(el('span', 'id', i.id), el('span', 'tag', i.verdict + (i.muted ? ' (muted)' : '')),
+      el('span', 'meta', i.events + ' events, last ' + i.last.slice(0, 16).replace('T', ' ') + ', ' + (i.release || 'no release') + (i.device ? ', ' + i.device : '')));
+    c.append(top, el('div', 'err', (i.type ? i.type + ': ' : '') + i.value));
+    if (i.cause) { const r = el('div', 'row'); r.append(el('span', null, 'Cause: '), document.createTextNode(i.cause)); c.append(r); }
+    if (i.action) { const r = el('div', 'row'); r.append(el('span', null, 'Next: '), document.createTextNode(i.action + (i.owner ? ' (' + i.owner + ')' : ''))); c.append(r); }
+    if (i.trace.length) c.append(el('div', 'trace', i.trace.join(' | ')));
+    const o = el('div', 'opts'); o.setAttribute('role', 'radiogroup'); o.setAttribute('aria-label', 'What to do about ' + i.id);
+    i.options.forEach((opt, n) => {
+      const l = el('label'); const r = document.createElement('input');
+      r.type = 'radio'; r.name = 'opt-' + i.id; r.id = 'opt-' + i.id + '-' + n; r.checked = picked[i.id] === opt;
+      r.onchange = () => { picked[i.id] = opt; };
+      l.append(r, document.createTextNode(opt)); if (n === 0) l.append(el('span', null, 'recommended'));
+      o.append(l);
+    });
+    c.append(o);
+    return c;
+  }
+
+  function renderIssues() {
+    const counts = {}; issues.forEach(i => { counts[i.verdict] = (counts[i.verdict] || 0) + 1; });
+    const chips = document.getElementById('chips'); chips.replaceChildren();
+    ORDER.filter(v => counts[v]).forEach(v => {
+      const b = el('button', 'chip', v); b.setAttribute('aria-pressed', String(filter === v));
+      b.append(el('b', null, counts[v])); b.onclick = () => { filter = filter === v ? null : v; renderIssues(); }; chips.append(b);
+    });
+    const list = document.getElementById('list'); list.replaceChildren();
+    const rows = issues.filter(i => !filter || i.verdict === filter)
+      .sort((a, b) => ORDER.indexOf(a.verdict) - ORDER.indexOf(b.verdict) || (b.last > a.last ? 1 : -1));
+    const groups = new Map();
+    rows.forEach(i => { const k = i.group || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
+    [...groups.entries()].sort((a, b) => (a[0] === '' ? 1 : 0) - (b[0] === '' ? 1 : 0)).forEach(([k, items]) => {
+      if (k) list.append(el('h2', 'sect', 'Same cause: ' + k));
+      else if (groups.size > 1) list.append(el('h2', 'sect', 'Other issues'));
+      items.forEach(i => list.append(card(i)));
+    });
+    if (!rows.length) list.append(el('p', 'sub', 'No open issues.'));
+  }
+
+  function fill(id, items) {
+    const box = document.getElementById(id); box.replaceChildren();
+    if (!Array.isArray(items) || !items.length) { box.appendChild(el('p', 'empty', 'Nothing open.')); return; }
+    const ul = el('ul'); items.forEach(x => ul.appendChild(el('li', null, String(x)))); box.appendChild(ul);
+  }
+
+  renderSummary(); renderQueue(); renderGraph(); renderIssues();
+  fill('needs', meta.needs); fill('questions', meta.questions);
+  document.getElementById('updated').textContent = 'Last updated ' + D.generated;
+
+  const msg = document.getElementById('msg'), out = document.getElementById('out');
+  const show = () => { out.textContent = message(); out.hidden = false; };
+  document.getElementById('copy').onclick = async () => {
+    show();
+    try { await navigator.clipboard.writeText(message()); msg.textContent = 'Copied. Paste it into the chat.'; }
+    catch (e) { msg.textContent = 'Select the text below and copy it.'; }
+  };
+  document.getElementById('submit').onclick = async () => {
+    show();
+    let db = null;
+    try { db = window.claude && await window.claude.use('db'); } catch (e) {}
+    if (!db) { msg.textContent = 'Saving is not available here. Copy the message into the chat instead.'; return; }
+    try {
+      await db.collection('decisions').add({ board: D.generated, submittedAt: new Date().toISOString(), choices: issues.map(i => ({ id: i.id, choice: picked[i.id] })) });
+      msg.textContent = 'Submitted. Tell Claude "submitted" in the chat and it will act on these.';
+    } catch (e) { msg.textContent = 'Could not save (' + ((e && e.code) || 'error') + '). Copy the message into the chat instead.'; }
+  };
+})();
+</script>

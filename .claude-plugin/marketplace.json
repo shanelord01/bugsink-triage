@@ -1,0 +1,12 @@
+{
+  "name": "shanelord01-plugins",
+  "description": "Claude Code plugins by Shane Lord",
+  "owner": { "name": "Shane Lord", "url": "https://github.com/shanelord01" },
+  "plugins": [
+    {
+      "name": "bugsink-triage",
+      "source": "./",
+      "description": "Triage open issues on a self-hosted Bugsink server: list, trace to a cause, classify, comment, resolve or mute."
+    }
+  ]
+}
